@@ -1,0 +1,22 @@
+[package]
+name = "rmap"
+version = "0.1.0"
+edition = "2021"
+description = "Codebase map CLI: brace-tree of files and Rust items, with focused module/file drill-down."
+authors = ["Elijah Atamas"]
+license = "MIT"
+repository = "https://github.com/stackdumper/rmap"
+homepage = "https://github.com/stackdumper/rmap"
+readme = "README.md"
+keywords = ["cli", "codebase", "tree", "rust", "syn"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "rmap"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "wrap_help"] }
+clap_complete = "4"
+proc-macro2 = { version = "1", features = ["span-locations"] }
+syn = { version = "2", features = ["full", "visit", "extra-traits"] }
