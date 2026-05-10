@@ -1,6 +1,6 @@
 # rmap
 
-Codebase map CLI. Two lenses: `tree`, `module`. Rust-aware (parses items via `syn`). Git-aware enumeration; falls back to fs walk outside repo.
+Codebase map CLI. Five lenses: `tree`, `module`, `refs`, `deps`, `graph`. Rust-aware (parses items via `syn`). Git-aware enumeration; falls back to fs walk outside repo.
 
 ## Use rmap to explore rmap
 
