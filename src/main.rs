@@ -302,6 +302,18 @@ struct GraphArgs {
     #[arg(long)]
     mermaid: bool,
 
+    /// Group mermaid nodes into `subgraph` clusters by top-level dir under
+    /// `src/` (e.g. `domain`, `engine`, `ui`). Implies `--mermaid`.
+    #[arg(long, requires = "mermaid")]
+    mermaid_cluster: bool,
+
+    /// Number of dir levels under `src/` used as the cluster key. Default 1
+    /// (e.g. `domain`). 2 splits sub-clusters (`domain/econ`,
+    /// `domain/fleet`). Useful when a single top-level dir has too many
+    /// nodes to render compactly. Requires `--mermaid-cluster`.
+    #[arg(long, value_name = "N", default_value_t = 1, requires = "mermaid_cluster")]
+    cluster_depth: usize,
+
     /// Maximum BFS depth from entry. Default: unlimited.
     #[arg(long, value_name = "N")]
     depth: Option<usize>,
@@ -318,6 +330,8 @@ EXAMPLES:
   rmap graph src/walk.rs --reverse        # who reaches walk.rs?
   rmap graph --depth 2                    # depth-bounded
   rmap graph --mermaid > g.md             # mermaid diagram
+  rmap graph --mermaid --mermaid-cluster                  # group by top-level dir
+  rmap graph --mermaid --mermaid-cluster --cluster-depth 2 # split into sub-dirs
 
 OUTPUT (brace tree, default):
   Single line per entry, e.g.:
@@ -330,7 +344,13 @@ OUTPUT (brace tree, default):
   `main.rs` are prefixed with their parent dir to disambiguate.
 
 OUTPUT (--mermaid):
-  `graph TD` block, each node declared once, then `a --> b` edges.
+  `graph TD` block, each node declared once, then `a --> b` edges. Node
+  labels are file stems; when stems collide across the rendered graph,
+  the parent dir is prefixed (e.g. two `balance` nodes become
+  `econ/balance` and `fleet/balance`).
+  With `--mermaid-cluster`, nodes are wrapped in `subgraph <dir>` blocks
+  by top-level dir under `src/`. Files directly in `src/` and external
+  crates render outside any subgraph.
 
 NOTES:
   - Reuses the same dep graph as `rmap deps`. Same single-crate limit.
@@ -546,6 +566,8 @@ fn run_graph(args: GraphArgs) -> ExitCode {
             entry,
             direction,
             mermaid: args.mermaid,
+            mermaid_cluster: args.mermaid_cluster,
+            cluster_depth: args.cluster_depth,
             depth: args.depth,
             include_external: args.ext,
         };

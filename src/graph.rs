@@ -30,6 +30,8 @@ pub struct GraphOptions {
     pub entry: Option<PathBuf>,
     pub direction: Direction,
     pub mermaid: bool,
+    pub mermaid_cluster: bool,
+    pub cluster_depth: usize,
     pub depth: Option<usize>,
     pub include_external: bool,
 }
@@ -51,7 +53,7 @@ pub fn run(repo_root: &Path, opts: &GraphOptions) -> String {
     let adj = build_adjacency(&graph, opts.direction, opts.include_external);
 
     if opts.mermaid {
-        render_mermaid(&entry, &adj, opts.depth)
+        render_mermaid(&entry, &adj, opts.depth, opts.mermaid_cluster, opts.cluster_depth)
     } else {
         render_brace(&entry, &adj, opts.depth)
     }
@@ -157,10 +159,12 @@ fn build_adjacency(graph: &Graph, dir: Direction, include_ext: bool) -> Adj {
 // --- brace render ----------------------------------------------------------
 
 fn render_brace(entry: &str, adj: &Adj, max_depth: Option<usize>) -> String {
+    let (nodes, _) = collect_reachable(entry, adj, max_depth);
+    let dups = dup_stems(&nodes);
     let mut out = String::new();
     let mut visited: BTreeSet<String> = BTreeSet::new();
     let mut stack: BTreeSet<String> = BTreeSet::new();
-    walk_brace(entry, adj, 0, max_depth, &mut visited, &mut stack, &mut out);
+    walk_brace(entry, adj, 0, max_depth, &dups, &mut visited, &mut stack, &mut out);
     out.push('\n');
     out
 }
@@ -170,11 +174,12 @@ fn walk_brace(
     adj: &Adj,
     cur_depth: usize,
     max_depth: Option<usize>,
+    dups: &BTreeSet<String>,
     visited: &mut BTreeSet<String>,
     stack: &mut BTreeSet<String>,
     out: &mut String,
 ) {
-    let label = short_label(node);
+    let label = short_label_disambig(node, dups);
 
     // Cycle (back-edge in current DFS path) takes precedence.
     if stack.contains(node) {
@@ -206,7 +211,7 @@ fn walk_brace(
         if i > 0 {
             out.push_str(", ");
         }
-        walk_brace(c, adj, cur_depth + 1, max_depth, visited, stack, out);
+        walk_brace(c, adj, cur_depth + 1, max_depth, dups, visited, stack, out);
     }
     out.push_str(" }");
     stack.remove(node);
@@ -238,7 +243,68 @@ fn short_label(rel: &str) -> String {
 
 // --- mermaid render --------------------------------------------------------
 
-fn render_mermaid(entry: &str, adj: &Adj, max_depth: Option<usize>) -> String {
+fn render_mermaid(
+    entry: &str,
+    adj: &Adj,
+    max_depth: Option<usize>,
+    cluster: bool,
+    cluster_depth: usize,
+) -> String {
+    let (nodes, edges) = collect_reachable(entry, adj, max_depth);
+    let dups = dup_stems(&nodes);
+
+    let mut out = String::from("graph TD\n");
+    if cluster {
+        // Group nodes by top-level dir under `src/` (or first path
+        // component for non-`src/` layouts). Files directly in `src/`
+        // and `ext:*` nodes go to the implicit root group (no subgraph).
+        let mut groups: BTreeMap<String, Vec<&String>> = BTreeMap::new();
+        for n in &nodes {
+            groups.entry(cluster_key(n, cluster_depth)).or_default().push(n);
+        }
+        // Render root group first (no wrapping subgraph), then named groups.
+        if let Some(roots) = groups.remove("") {
+            for n in roots {
+                out.push_str(&format!(
+                    "  {}[\"{}\"]\n",
+                    mermaid_id(n),
+                    short_label_disambig(n, &dups)
+                ));
+            }
+        }
+        for (key, members) in &groups {
+            out.push_str(&format!("  subgraph {} [{}]\n", mermaid_id(key), key));
+            for n in members {
+                out.push_str(&format!(
+                    "    {}[\"{}\"]\n",
+                    mermaid_id(n),
+                    short_label_disambig(n, &dups)
+                ));
+            }
+            out.push_str("  end\n");
+        }
+    } else {
+        for n in &nodes {
+            out.push_str(&format!(
+                "  {}[\"{}\"]\n",
+                mermaid_id(n),
+                short_label_disambig(n, &dups)
+            ));
+        }
+    }
+    for (a, b) in &edges {
+        out.push_str(&format!("  {} --> {}\n", mermaid_id(a), mermaid_id(b)));
+    }
+    out
+}
+
+/// BFS the adjacency starting at `entry`, capped by `max_depth`. Returns
+/// the reachable node set and edge set in canonical (sorted) order.
+fn collect_reachable(
+    entry: &str,
+    adj: &Adj,
+    max_depth: Option<usize>,
+) -> (BTreeSet<String>, BTreeSet<(String, String)>) {
     let mut edges: BTreeSet<(String, String)> = BTreeSet::new();
     let mut nodes: BTreeSet<String> = BTreeSet::new();
     let mut visited: BTreeSet<String> = BTreeSet::new();
@@ -262,16 +328,69 @@ fn render_mermaid(entry: &str, adj: &Adj, max_depth: Option<usize>) -> String {
             }
         }
     }
+    (nodes, edges)
+}
 
-    let mut out = String::from("graph TD\n");
-    // Declare each node once with its label, then bare IDs in edges.
-    for n in &nodes {
-        out.push_str(&format!("  {}[\"{}\"]\n", mermaid_id(n), short_label(n)));
+/// Set of `short_label` values that occur on more than one node. Used to
+/// trigger parent-prefix disambiguation only where it's needed.
+fn dup_stems(nodes: &BTreeSet<String>) -> BTreeSet<String> {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for n in nodes {
+        *counts.entry(short_label(n)).or_insert(0) += 1;
     }
-    for (a, b) in &edges {
-        out.push_str(&format!("  {} --> {}\n", mermaid_id(a), mermaid_id(b)));
+    counts
+        .into_iter()
+        .filter(|(_, c)| *c > 1)
+        .map(|(k, _)| k)
+        .collect()
+}
+
+/// Like `short_label`, but if the bare stem collides with another node in
+/// the rendered graph, prefix with the parent dir name. `mod`/`lib`/`main`
+/// are already disambiguated by `short_label`.
+fn short_label_disambig(rel: &str, dups: &BTreeSet<String>) -> String {
+    let base = short_label(rel);
+    if !dups.contains(&base) || rel.starts_with("ext:") {
+        return base;
     }
-    out
+    let p = Path::new(rel);
+    if let Some(parent) = p
+        .parent()
+        .and_then(|pp| pp.file_name())
+        .and_then(|s| s.to_str())
+    {
+        return format!("{parent}/{base}");
+    }
+    base
+}
+
+/// Cluster key for `--mermaid-cluster`. `depth` controls nesting: 1 groups
+/// by top-level dir under `src/` (e.g. `domain`), 2 groups by two levels
+/// (e.g. `domain/econ`), and so on. Files directly under `src/` and
+/// `ext:*` nodes go to the implicit root group (empty string). For repos
+/// without a leading `src/`, the first path components are used as-is.
+fn cluster_key(rel: &str, depth: usize) -> String {
+    if rel.starts_with("ext:") || depth == 0 {
+        return String::new();
+    }
+    let p = Path::new(rel);
+    // Directory segments only — exclude the final filename.
+    let mut dir_parts: Vec<String> = p
+        .parent()
+        .map(|pp| {
+            pp.components()
+                .filter_map(|c| c.as_os_str().to_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    if dir_parts.first().map(|s| s.as_str()) == Some("src") {
+        dir_parts.remove(0);
+    }
+    if dir_parts.is_empty() {
+        return String::new();
+    }
+    let take = depth.min(dir_parts.len());
+    dir_parts[..take].join("/")
 }
 
 /// Safe node ID: alphanumeric only, leading char prefixed with `n` if it
@@ -292,7 +411,6 @@ fn mermaid_id(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
 
     fn graph_from(edges: &[(&str, &str)], files: &[&str]) -> Graph {
         let mut g = Graph::default();
@@ -369,7 +487,7 @@ mod tests {
     fn mermaid_dedupes_node_declarations() {
         let g = graph_from(&[("a", "b"), ("a", "c"), ("c", "b")], &["a", "b", "c"]);
         let adj = build_adjacency(&g, Direction::Forward, false);
-        let out = render_mermaid("a", &adj, None);
+        let out = render_mermaid("a", &adj, None, false, 1);
         assert!(out.starts_with("graph TD\n"), "{out}");
         // `b` declared exactly once.
         assert_eq!(out.matches("b[\"b\"]").count(), 1, "{out}");
@@ -401,6 +519,88 @@ mod tests {
         let adj = build_adjacency(&g, Direction::Forward, false);
         let out = render_brace("a", &adj, None);
         assert!(!out.contains("ext:std"), "{out}");
+    }
+
+    #[test]
+    fn mermaid_disambiguates_colliding_stems() {
+        // Two `balance.rs` under different parents collide on stem.
+        let g = graph_from(
+            &[
+                ("src/main.rs", "src/econ/balance.rs"),
+                ("src/main.rs", "src/fleet/balance.rs"),
+            ],
+            &["src/main.rs", "src/econ/balance.rs", "src/fleet/balance.rs"],
+        );
+        let adj = build_adjacency(&g, Direction::Forward, false);
+        let out = render_mermaid("src/main.rs", &adj, None, false, 1);
+        assert!(out.contains("\"econ/balance\""), "{out}");
+        assert!(out.contains("\"fleet/balance\""), "{out}");
+        // Bare `"balance"` label must not appear when collision exists.
+        assert!(!out.contains("[\"balance\"]"), "{out}");
+    }
+
+    #[test]
+    fn mermaid_cluster_groups_by_top_level_dir() {
+        let g = graph_from(
+            &[
+                ("src/main.rs", "src/engine/mod.rs"),
+                ("src/main.rs", "src/ui/app.rs"),
+                ("src/engine/mod.rs", "src/ui/app.rs"),
+            ],
+            &["src/main.rs", "src/engine/mod.rs", "src/ui/app.rs"],
+        );
+        let adj = build_adjacency(&g, Direction::Forward, false);
+        let out = render_mermaid("src/main.rs", &adj, None, true, 1);
+        assert!(out.contains("subgraph engine"), "{out}");
+        assert!(out.contains("subgraph ui"), "{out}");
+        // `src/main.rs` lives at root level — no subgraph wrapper for it.
+        assert!(!out.contains("subgraph src"), "{out}");
+        assert!(out.contains("end\n"), "{out}");
+    }
+
+    #[test]
+    fn cluster_key_classifies_paths() {
+        assert_eq!(cluster_key("src/domain/econ/mod.rs", 1), "domain");
+        assert_eq!(cluster_key("src/main.rs", 1), "");
+        assert_eq!(cluster_key("src/walk.rs", 1), "");
+        assert_eq!(cluster_key("ext:syn", 1), "");
+        assert_eq!(cluster_key("crates/foo/src/lib.rs", 1), "crates");
+    }
+
+    #[test]
+    fn cluster_key_respects_depth() {
+        // Depth 2 splits domain children into per-subdir clusters.
+        assert_eq!(cluster_key("src/domain/econ/mod.rs", 2), "domain/econ");
+        assert_eq!(cluster_key("src/domain/econ/balance.rs", 2), "domain/econ");
+        // Files directly in `src/domain` (no second segment) clamp to `domain`.
+        assert_eq!(cluster_key("src/domain/empire.rs", 2), "domain");
+        // Depth 3 ignores filename; clamp when fewer dir segments exist.
+        assert_eq!(cluster_key("src/domain/econ/mod.rs", 3), "domain/econ");
+        // Depth 0 disables clustering (empty key).
+        assert_eq!(cluster_key("src/domain/econ/mod.rs", 0), "");
+    }
+
+    #[test]
+    fn mermaid_cluster_depth_2_splits_domain() {
+        let g = graph_from(
+            &[
+                ("src/main.rs", "src/domain/econ/mod.rs"),
+                ("src/main.rs", "src/domain/fleet/mod.rs"),
+            ],
+            &[
+                "src/main.rs",
+                "src/domain/econ/mod.rs",
+                "src/domain/fleet/mod.rs",
+            ],
+        );
+        let adj = build_adjacency(&g, Direction::Forward, false);
+        let out = render_mermaid("src/main.rs", &adj, None, true, 2);
+        assert!(out.contains("subgraph "), "{out}");
+        // Subgraph names use the joined key as the label.
+        assert!(out.contains("[domain/econ]"), "{out}");
+        assert!(out.contains("[domain/fleet]"), "{out}");
+        // No combined `domain` subgraph at depth 2.
+        assert!(!out.contains("[domain]\n"), "{out}");
     }
 
     #[test]
