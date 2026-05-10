@@ -62,8 +62,10 @@ pub fn run(root: &Path, opts: &RefsOptions) -> String {
             exclude: Vec::new(),
             ext: vec!["rs".to_string()],
         };
-        let tree = walk::enumerate(root, &filter);
-        collect_rs_files(&tree, &mut files);
+        match walk::enumerate(root, &filter) {
+            Ok(tree) => collect_rs_files(&tree, &mut files),
+            Err(e) => return format!("{e}\n"),
+        }
     }
 
     let mut hits: BTreeSet<Hit> = BTreeSet::new();
@@ -100,7 +102,10 @@ fn collect_rs_files(node: &Node, out: &mut Vec<(PathBuf, String)>) {
     }
 }
 
-/// Best-effort relative path: try CWD, fall back to absolute.
+/// Best-effort relative path: stripped against the process CWD when
+/// possible (so `rmap refs Foo --in src/sub` from the repo root prints
+/// `src/sub/file.rs:...`). Falls back to the absolute path if `abs` is
+/// outside CWD or CWD is unavailable.
 fn display_rel(abs: &Path) -> String {
     let cwd = std::env::current_dir().ok();
     if let Some(cwd) = cwd {

@@ -274,13 +274,17 @@ fn render_mermaid(entry: &str, adj: &Adj, max_depth: Option<usize>) -> String {
     out
 }
 
-/// Safe node ID: alphanumeric only, leading char prefixed if needed.
+/// Safe node ID: alphanumeric only, leading char prefixed with `n` if it
+/// would otherwise be a digit (Mermaid IDs must not start with one).
 fn mermaid_id(name: &str) -> String {
     let safe: String = name
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
-    safe
+    match safe.chars().next() {
+        Some(c) if c.is_ascii_digit() => format!("n{safe}"),
+        _ => safe,
+    }
 }
 
 // --- tests -----------------------------------------------------------------

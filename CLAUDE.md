@@ -27,6 +27,9 @@ Don't `find`/`ls`/`tree` for layout — `rmap` is faster, parsed, and the thing 
 - `src/walk.rs` — git-aware path enumeration + filtering.
 - `src/parse.rs` — syn-based Rust item extraction.
 - `src/render.rs` — tree / module output.
+- `src/deps.rs` — file-level dep graph (`use` + `mod` resolution).
+- `src/graph.rs` — reachability subgraph (brace + mermaid).
+- `src/refs.rs` — identifier search (defs + uses via syn visitor).
 
 ## Conventions
 

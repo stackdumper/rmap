@@ -436,7 +436,7 @@ fn render_all(graph: &Graph, mode: Mode, include_ext: bool, scope: Option<&str>)
                 } else {
                     deps.join(", ")
                 };
-                out.push_str(&format!("{:<w$} -> {}\n", f, rhs, w = max_w));
+                out.push_str(&format!("{:<w$} -> {}\n", *f, rhs, w = max_w));
             }
         }
         Mode::Reverse => {
@@ -462,7 +462,7 @@ fn render_all(graph: &Graph, mode: Mode, include_ext: bool, scope: Option<&str>)
                         .collect::<Vec<_>>()
                         .join(", ")
                 };
-                out.push_str(&format!("{:<w$} <- {}\n", f, rhs, w = max_w));
+                out.push_str(&format!("{:<w$} <- {}\n", *f, rhs, w = max_w));
             }
         }
     }

@@ -388,19 +388,26 @@ fn run_tree(args: TreeArgs) -> ExitCode {
     } else {
         args.paths
     };
+    let mut exit = ExitCode::SUCCESS;
     for (i, path) in paths.iter().enumerate() {
         if i > 0 {
             println!();
         }
-        let tree = walk::enumerate(path, &filter);
+        let tree = match walk::enumerate(path, &filter) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("{e}");
+                exit = ExitCode::from(1);
+                continue;
+            }
+        };
         print!("{}", render::tree(&tree, &opts));
     }
-    ExitCode::SUCCESS
+    exit
 }
 
 fn run_module(args: ModuleArgs) -> ExitCode {
     let mut exit = ExitCode::SUCCESS;
-    let multiple = args.paths.len() > 1;
     for (i, path) in args.paths.iter().enumerate() {
         if i > 0 {
             println!();
@@ -427,9 +434,15 @@ fn run_module(args: ModuleArgs) -> ExitCode {
             lines: args.lines,
             caps: Vec::new(),
         };
-        let tree = walk::enumerate(&resolved, &filter);
+        let tree = match walk::enumerate(&resolved, &filter) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("{e}");
+                exit = ExitCode::from(1);
+                continue;
+            }
+        };
         print!("{}", render::tree(&tree, &opts));
-        let _ = multiple;
     }
     exit
 }
@@ -509,7 +522,7 @@ fn walk_up_for_cargo(start: &Path) -> PathBuf {
         }
         match cur.parent() {
             Some(p) => cur = p,
-            None => return abs.clone(),
+            None => return cur.to_path_buf(),
         }
     }
 }

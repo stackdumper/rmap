@@ -42,15 +42,11 @@ pub struct Filter {
     pub ext: Vec<String>,
 }
 
-/// Build the tree for the given root.
-pub fn enumerate(root: &Path, filter: &Filter) -> Node {
-    let abs_root = match fs::canonicalize(root) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("error: cannot canonicalize {}: {e}", root.display());
-            std::process::exit(1);
-        }
-    };
+/// Build the tree for the given root. Returns `Err` with a printable
+/// message if the root cannot be canonicalized.
+pub fn enumerate(root: &Path, filter: &Filter) -> Result<Node, String> {
+    let abs_root = fs::canonicalize(root)
+        .map_err(|e| format!("error: cannot canonicalize {}: {e}", root.display()))?;
     let name = abs_root
         .file_name()
         .and_then(|n| n.to_str())
@@ -68,7 +64,7 @@ pub fn enumerate(root: &Path, filter: &Filter) -> Node {
     for rel in &filtered {
         root_node.insert(rel);
     }
-    root_node.into_node(name, PathBuf::new(), &abs_root)
+    Ok(root_node.into_node(name, PathBuf::new(), &abs_root))
 }
 
 /// Find all directories under `root` whose path ends in `suffix` as a
@@ -130,8 +126,6 @@ impl TreeBuild {
 
     fn into_node(mut self, name: String, rel: PathBuf, abs_root: &Path) -> Node {
         let mut children: Vec<Node> = Vec::new();
-        // Dirs first, then files — but on render we sort dirs after files
-        // for the brace tree; for now keep insertion-order-friendly: dirs sorted, files sorted.
         for (dname, dnode) in std::mem::take(&mut self.dirs) {
             let drel = rel.join(&dname);
             children.push(dnode.into_node(dname, drel, abs_root));
