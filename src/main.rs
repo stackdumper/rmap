@@ -226,6 +226,10 @@ OUTPUT:
   def kinds: fn, method, struct, enum, union, trait, const, static, type, macro
   use kinds: call, method, type, struct-lit, path, macro, import, pat
 
+  When no hits, prints `no hits for `<name>`` and, if any similar
+  identifiers exist in scope, a `did you mean: ...` line ranked by
+  substring, snake/camelCase token overlap, and edit distance.
+
 LIMITATIONS:
   - Matches by trailing identifier only (no name resolution). A hit on
     `foo` matches every `foo` regardless of which `foo` it resolves to.

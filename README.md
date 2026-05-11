@@ -101,6 +101,13 @@ src/walk.rs:37:12  def struct     Filter
 src/walk.rs:47:40  use type       Filter
 ```
 
+`rmap refs Filtr` (typo → suggestion):
+
+```
+no hits for `Filtr`
+did you mean: Filter, filter, File, file, files?
+```
+
 `rmap deps src/walk.rs`:
 
 ```
@@ -153,6 +160,7 @@ Run `rmap --help` for the full surface. Highlights:
 - `def` kinds: `fn, method, struct, enum, union, trait, const, static, type, macro`.
 - `use` kinds: `call, method, type, struct-lit, path, macro, import, pat`.
 - Matches by trailing path segment only — no name resolution. Scope with `--in PATH` to disambiguate.
+- On zero hits, suggests similar identifiers (`did you mean: ...`) ranked by substring, snake/camelCase token overlap, and edit distance.
 
 **`deps [PATH]`**
 - `--reverse`, `--ext`

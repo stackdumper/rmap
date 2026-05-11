@@ -562,13 +562,16 @@ mod tests {
     }
 
     fn tmp() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
         let d = std::env::temp_dir().join(format!(
-            "rmap-deps-test-{}-{}",
+            "rmap-deps-test-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            N.fetch_add(1, Ordering::Relaxed),
         ));
         fs::create_dir_all(&d).unwrap();
         d

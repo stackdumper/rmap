@@ -18,7 +18,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use proc_macro2::Span;
+use proc_macro2::{Span, TokenStream, TokenTree};
 use syn::visit::{self, Visit};
 use syn::{
     Expr, ExprCall, ExprMethodCall, ExprPath, ExprStruct, ImplItem, Item, ItemImpl, Macro, Pat,
@@ -74,7 +74,21 @@ pub fn run(root: &Path, opts: &RefsOptions) -> String {
     }
 
     if hits.is_empty() {
-        return format!("no hits for `{}`\n", opts.name);
+        let mut idents: BTreeSet<String> = BTreeSet::new();
+        for (abs, _) in &files {
+            if let Ok(src) = fs::read_to_string(abs) {
+                collect_idents(&src, &mut idents);
+            }
+        }
+        let sugg = suggest(&opts.name, &idents, 5);
+        if sugg.is_empty() {
+            return format!("no hits for `{}`\n", opts.name);
+        }
+        return format!(
+            "no hits for `{}`\ndid you mean: {}?\n",
+            opts.name,
+            sugg.join(", ")
+        );
     }
     let mut out = String::new();
     for h in &hits {
@@ -467,6 +481,135 @@ impl<'ast, 'a> Visit<'ast> for UseCollector<'a> {
     }
 }
 
+/// Pull every `Ident` from a Rust source file via a `proc_macro2`
+/// token-tree walk. Keywords (e.g. `fn`, `let`) leak in too, but they're
+/// filtered later by the similarity threshold against the user's query.
+fn collect_idents(src: &str, out: &mut BTreeSet<String>) {
+    if let Ok(ts) = src.parse::<TokenStream>() {
+        walk_tokens(ts, out);
+    }
+}
+
+fn walk_tokens(ts: TokenStream, out: &mut BTreeSet<String>) {
+    for t in ts {
+        match t {
+            TokenTree::Ident(i) => {
+                out.insert(i.to_string());
+            }
+            TokenTree::Group(g) => walk_tokens(g.stream(), out),
+            _ => {}
+        }
+    }
+}
+
+/// Split an identifier into lowercased tokens on `_` and camelCase
+/// boundaries. `render_HUDBar` -> ["render", "hud", "bar"].
+fn tokenize(s: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for part in s.split('_') {
+        if part.is_empty() {
+            continue;
+        }
+        let mut cur = String::new();
+        let chars: Vec<char> = part.chars().collect();
+        for i in 0..chars.len() {
+            let c = chars[i];
+            let prev = if i > 0 { Some(chars[i - 1]) } else { None };
+            let next = if i + 1 < chars.len() {
+                Some(chars[i + 1])
+            } else {
+                None
+            };
+            let boundary = match (prev, c, next) {
+                (Some(p), c, _) if p.is_lowercase() && c.is_uppercase() => true,
+                (Some(p), c, Some(n))
+                    if p.is_uppercase() && c.is_uppercase() && n.is_lowercase() =>
+                {
+                    true
+                }
+                _ => false,
+            };
+            if boundary && !cur.is_empty() {
+                out.push(cur.to_lowercase());
+                cur = String::new();
+            }
+            cur.push(c);
+        }
+        if !cur.is_empty() {
+            out.push(cur.to_lowercase());
+        }
+    }
+    out
+}
+
+fn levenshtein(a: &str, b: &str) -> usize {
+    let av: Vec<char> = a.chars().collect();
+    let bv: Vec<char> = b.chars().collect();
+    let (n, m) = (av.len(), bv.len());
+    if n == 0 {
+        return m;
+    }
+    if m == 0 {
+        return n;
+    }
+    let mut prev: Vec<usize> = (0..=m).collect();
+    let mut cur: Vec<usize> = vec![0; m + 1];
+    for i in 1..=n {
+        cur[0] = i;
+        for j in 1..=m {
+            let cost = if av[i - 1] == bv[j - 1] { 0 } else { 1 };
+            cur[j] = (prev[j] + 1)
+                .min(cur[j - 1] + 1)
+                .min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[m]
+}
+
+fn score(query: &str, cand: &str) -> i32 {
+    let ql = query.to_lowercase();
+    let cl = cand.to_lowercase();
+    if ql == cl {
+        return 10_000;
+    }
+    let mut s: i32 = 0;
+    if cl.contains(&ql) {
+        s += 200;
+    }
+    if ql.contains(&cl) {
+        s += 100;
+    }
+    let qt = tokenize(query);
+    let ct = tokenize(cand);
+    let shared = qt.iter().filter(|t| ct.contains(t)).count() as i32;
+    s += shared * 80;
+    let lev = levenshtein(&ql, &cl) as i32;
+    let maxlen = ql.len().max(cl.len()) as i32;
+    if maxlen > 0 {
+        s += (maxlen - lev) * 5;
+    }
+    // Bonus for near-identical strings (typo distance).
+    if maxlen >= 4 && lev <= 2 {
+        s += 80;
+    }
+    s
+}
+
+/// Rank `idents` by similarity to `query`. Returns up to `n` candidates
+/// above an empirical floor; empty if nothing crosses the bar.
+fn suggest(query: &str, idents: &BTreeSet<String>, n: usize) -> Vec<String> {
+    const FLOOR: i32 = 60;
+    let mut scored: Vec<(i32, &String)> = idents
+        .iter()
+        .filter(|i| *i != query && i.len() > 1)
+        .map(|i| (score(query, i), i))
+        .filter(|(s, _)| *s >= FLOOR)
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
+    scored.into_iter().take(n).map(|(_, s)| s.clone()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,6 +707,44 @@ mod tests {
         let src = "fn foo() {}";
         let h = scan(src, "nonexistent", Mode::Both);
         assert!(h.is_empty());
+    }
+
+    #[test]
+    fn tokenize_splits_snake_and_camel() {
+        assert_eq!(tokenize("render_HUDBar"), vec!["render", "hud", "bar"]);
+        assert_eq!(tokenize("draw_banner"), vec!["draw", "banner"]);
+        assert_eq!(tokenize("MyXMLParser"), vec!["my", "xml", "parser"]);
+    }
+
+    #[test]
+    fn suggest_finds_substring_token() {
+        let mut s: BTreeSet<String> = BTreeSet::new();
+        for x in ["render_banner", "draw_hud", "status_bar", "totally_unrelated"] {
+            s.insert(x.to_string());
+        }
+        let out = suggest("banner", &s, 5);
+        assert!(out.contains(&"render_banner".to_string()));
+        assert_eq!(out[0], "render_banner");
+    }
+
+    #[test]
+    fn suggest_levenshtein_close() {
+        let mut s: BTreeSet<String> = BTreeSet::new();
+        for x in ["bannar", "banister", "x"] {
+            s.insert(x.to_string());
+        }
+        let out = suggest("banner", &s, 5);
+        assert!(out.contains(&"bannar".to_string()));
+    }
+
+    #[test]
+    fn suggest_floor_excludes_garbage() {
+        let mut s: BTreeSet<String> = BTreeSet::new();
+        for x in ["xyz", "qqq", "zzzzzz"] {
+            s.insert(x.to_string());
+        }
+        let out = suggest("banner", &s, 5);
+        assert!(out.is_empty());
     }
 
     #[test]
