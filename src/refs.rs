@@ -567,31 +567,81 @@ fn levenshtein(a: &str, b: &str) -> usize {
     prev[m]
 }
 
+fn bigrams(s: &str) -> BTreeSet<(char, char)> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = BTreeSet::new();
+    for w in chars.windows(2) {
+        out.insert((w[0], w[1]));
+    }
+    out
+}
+
+fn jaccard(a: &BTreeSet<(char, char)>, b: &BTreeSet<(char, char)>) -> f64 {
+    if a.is_empty() && b.is_empty() {
+        return 0.0;
+    }
+    let inter = a.intersection(b).count() as f64;
+    let union = a.union(b).count() as f64;
+    inter / union
+}
+
+fn common_prefix(a: &str, b: &str) -> usize {
+    a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count()
+}
+
+/// Score how well `cand` matches `query`. Returns 0 when no real signal
+/// (gate); otherwise a composite of substring, token overlap, bigram
+/// Jaccard, longest common prefix, and edit distance.
 fn score(query: &str, cand: &str) -> i32 {
     let ql = query.to_lowercase();
     let cl = cand.to_lowercase();
     if ql == cl {
         return 10_000;
     }
-    let mut s: i32 = 0;
-    if cl.contains(&ql) {
-        s += 200;
-    }
-    if ql.contains(&cl) {
-        s += 100;
-    }
+
+    let qb = bigrams(&ql);
+    let cb = bigrams(&cl);
+    let jacc = jaccard(&qb, &cb);
+
     let qt = tokenize(query);
     let ct = tokenize(cand);
-    let shared = qt.iter().filter(|t| ct.contains(t)).count() as i32;
-    s += shared * 80;
-    let lev = levenshtein(&ql, &cl) as i32;
-    let maxlen = ql.len().max(cl.len()) as i32;
-    if maxlen > 0 {
-        s += (maxlen - lev) * 5;
+    let shared_tok = qt.iter().filter(|t| ct.contains(t)).count();
+
+    let lcp = common_prefix(&ql, &cl);
+    let lev = levenshtein(&ql, &cl);
+    let maxlen = ql.len().max(cl.len());
+
+    let substring_hit =
+        ql.len() >= 3 && cl.len() >= 3 && (cl.contains(&ql) || ql.contains(&cl));
+    let close_typo = maxlen >= 4 && (lev as f64) / (maxlen as f64) <= 0.34;
+
+    // Gate: require a meaningful match signal. Filters out short-lev
+    // noise like `Bar` vs `baner`.
+    let pass = substring_hit
+        || shared_tok > 0
+        || jacc >= 0.5
+        || (close_typo && lcp >= 2);
+    if !pass {
+        return 0;
     }
-    // Bonus for near-identical strings (typo distance).
+
+    let mut s: i32 = 0;
+    if substring_hit {
+        if cl.contains(&ql) {
+            s += 200;
+        }
+        if ql.contains(&cl) {
+            s += 100;
+        }
+    }
+    s += shared_tok as i32 * 100;
+    s += (jacc * 200.0) as i32;
+    s += lcp as i32 * 25;
+    if maxlen > 0 {
+        s += ((maxlen - lev) as i32) * 4;
+    }
     if maxlen >= 4 && lev <= 2 {
-        s += 80;
+        s += 60;
     }
     s
 }
@@ -745,6 +795,39 @@ mod tests {
         }
         let out = suggest("banner", &s, 5);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn suggest_gates_short_lev_noise() {
+        // `Bar`/`Lander`/`Namer` are short-edit-distance to `baner` but
+        // semantically unrelated. Should be filtered out by the gate.
+        let mut s: BTreeSet<String> = BTreeSet::new();
+        for x in ["Bar", "Lander", "Namer", "banner", "banners"] {
+            s.insert(x.to_string());
+        }
+        let out = suggest("baner", &s, 5);
+        assert!(!out.contains(&"Bar".to_string()));
+        assert!(!out.contains(&"Lander".to_string()));
+        assert!(!out.contains(&"Namer".to_string()));
+        assert!(out.contains(&"banner".to_string()));
+        // Real typo target ranks above other matches.
+        assert_eq!(out[0], "banner");
+    }
+
+    #[test]
+    fn suggest_prefix_boost() {
+        let mut s: BTreeSet<String> = BTreeSet::new();
+        for x in ["banner_h", "BANNER_CAP", "unrelated_banner_thing"] {
+            s.insert(x.to_string());
+        }
+        let out = suggest("banner", &s, 5);
+        // Prefix matches should beat mid-string matches.
+        let idx_prefix = out.iter().position(|x| x == "banner_h");
+        let idx_mid = out.iter().position(|x| x == "unrelated_banner_thing");
+        assert!(idx_prefix.is_some());
+        if let (Some(p), Some(m)) = (idx_prefix, idx_mid) {
+            assert!(p < m, "prefix={p}, mid={m}, out={out:?}");
+        }
     }
 
     #[test]

@@ -105,7 +105,7 @@ src/walk.rs:47:40  use type       Filter
 
 ```
 no hits for `Filtr`
-did you mean: Filter, filter, File, file, files?
+did you mean: Filter, filter?
 ```
 
 `rmap deps src/walk.rs`:
@@ -160,7 +160,7 @@ Run `rmap --help` for the full surface. Highlights:
 - `def` kinds: `fn, method, struct, enum, union, trait, const, static, type, macro`.
 - `use` kinds: `call, method, type, struct-lit, path, macro, import, pat`.
 - Matches by trailing path segment only — no name resolution. Scope with `--in PATH` to disambiguate.
-- On zero hits, suggests similar identifiers (`did you mean: ...`) ranked by substring, snake/camelCase token overlap, and edit distance.
+- On zero hits, suggests similar identifiers (`did you mean: ...`) ranked by substring, snake/camelCase token overlap, longest common prefix, character-bigram Jaccard similarity, and edit distance. A signal gate suppresses short-edit-distance noise (e.g. `Bar` won't be suggested for `baner`).
 
 **`deps [PATH]`**
 - `--reverse`, `--ext`

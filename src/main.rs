@@ -228,7 +228,8 @@ OUTPUT:
 
   When no hits, prints `no hits for `<name>`` and, if any similar
   identifiers exist in scope, a `did you mean: ...` line ranked by
-  substring, snake/camelCase token overlap, and edit distance.
+  substring, snake/camelCase token overlap, longest common prefix,
+  character-bigram Jaccard similarity, and edit distance.
 
 LIMITATIONS:
   - Matches by trailing identifier only (no name resolution). A hit on
