@@ -37,6 +37,8 @@ pub enum Mode {
 pub struct RefsOptions {
     pub name: String,
     pub mode: Mode,
+    /// When `Some(N)`, print `±N` lines of source context around each hit.
+    pub excerpt: Option<usize>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
@@ -91,13 +93,52 @@ pub fn run(root: &Path, opts: &RefsOptions) -> String {
         );
     }
     let mut out = String::new();
+    let mut src_cache: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
     for h in &hits {
         out.push_str(&format!(
             "{}:{}:{} {} {} {}\n",
             h.file, h.line, h.col, h.role, h.kind, h.name
         ));
+        if let Some(ctx) = opts.excerpt {
+            let lines = src_cache.entry(h.file.clone()).or_insert_with(|| {
+                let abs = files
+                    .iter()
+                    .find(|(_, rel)| rel == &h.file)
+                    .map(|(abs, _)| abs.clone());
+                abs.and_then(|p| fs::read_to_string(p).ok())
+                    .map(|s| s.lines().map(str::to_string).collect())
+                    .unwrap_or_default()
+            });
+            render_excerpt(&mut out, lines, h.line, ctx);
+        }
     }
     out
+}
+
+/// Append `±ctx` source lines around `hit_line` (1-indexed) to `out`.
+/// Hit line prefixed with `>`, others with ` `. Line numbers right-padded
+/// to width of the largest emitted line number.
+fn render_excerpt(out: &mut String, lines: &[String], hit_line: usize, ctx: usize) {
+    if lines.is_empty() {
+        return;
+    }
+    let total = lines.len();
+    let start = hit_line.saturating_sub(ctx).max(1);
+    let end = (hit_line + ctx).min(total);
+    let width = end.to_string().len();
+    for n in start..=end {
+        let marker = if n == hit_line { '>' } else { ' ' };
+        // `lines` is 0-indexed; user-facing `n` is 1-indexed.
+        let content = lines.get(n - 1).map(String::as_str).unwrap_or("");
+        out.push_str(&format!(
+            "  {marker} {n:>width$} | {content}\n",
+            marker = marker,
+            n = n,
+            width = width,
+            content = content,
+        ));
+    }
 }
 
 fn collect_rs_files(node: &Node, out: &mut Vec<(PathBuf, String)>) {

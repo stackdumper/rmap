@@ -209,6 +209,11 @@ struct RefsArgs {
     /// Only emit uses, skip definitions.
     #[arg(long, conflicts_with = "defs_only")]
     uses_only: bool,
+
+    /// Print source excerpt with ±N lines of context around each hit.
+    /// Use `--excerpt 0` for hit line only. Hit line is marked with `>`.
+    #[arg(long, value_name = "N")]
+    excerpt: Option<usize>,
 }
 
 const REFS_AFTER_HELP: &str = "\
@@ -218,6 +223,7 @@ EXAMPLES:
   rmap refs render_file --uses-only       # who calls `render_file`?
   rmap refs Foo Bar Baz                   # multiple names (groups, blank line between)
   rmap refs Foo --in src/domain           # scope search to a subtree
+  rmap refs collect_idents --excerpt 2    # show ±2 lines of source around each hit
 
 OUTPUT:
   Each hit on its own line:
@@ -485,6 +491,7 @@ fn run_refs(args: RefsArgs) -> ExitCode {
         let opts = refs::RefsOptions {
             name: name.clone(),
             mode,
+            excerpt: args.excerpt,
         };
         print!("{}", refs::run(&args.path, &opts));
     }
@@ -599,7 +606,8 @@ items via `syn`, brace output on stdout.
   one dir matches. Multiple args render in order, blank line between.
 - `rmap refs <Name>...` — find defs + uses of one or more Rust
   identifiers. `--defs-only` / `--uses-only` to filter, `--in PATH`
-  to scope. Matches by trailing path segment.
+  to scope, `--excerpt N` to inline ±N source lines per hit (hit line
+  marked `>`). Matches by trailing path segment.
 - `rmap deps [PATH]` — file-level dep graph from `use` + `mod`. Default
   whole-repo forward (`file -> deps`). `--reverse` for callers,
   `--ext` for external crates. Pass a `.rs` file to focus on one file.

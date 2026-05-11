@@ -101,6 +101,15 @@ src/walk.rs:37:12  def struct     Filter
 src/walk.rs:47:40  use type       Filter
 ```
 
+`rmap refs Filter --excerpt 1` (with source context):
+
+```
+src/walk.rs:37:12 def struct Filter
+    36 | #[derive(Default)]
+  > 37 | pub struct Filter {
+    38 |     /// Skip paths whose relative path contains any of these substrings.
+```
+
 `rmap refs Filtr` (typo → suggestion):
 
 ```
@@ -155,8 +164,9 @@ Run `rmap --help` for the full surface. Highlights:
 - Positional args: exact dir, exact file, or unique path suffix. Multiple args render in order, blank line between.
 
 **`refs <NAME>...`**
-- `--in PATH`, `--defs-only`, `--uses-only`
+- `--in PATH`, `--defs-only`, `--uses-only`, `--excerpt N`
 - Output: `file:line:col role kind name`. `role` ∈ `def|use`.
+- `--excerpt N` appends ±N source lines around each hit; the hit line is marked `>`.
 - `def` kinds: `fn, method, struct, enum, union, trait, const, static, type, macro`.
 - `use` kinds: `call, method, type, struct-lit, path, macro, import, pat`.
 - Matches by trailing path segment only — no name resolution. Scope with `--in PATH` to disambiguate.
