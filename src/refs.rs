@@ -14,7 +14,7 @@
 //! `use` kinds: `call`, `method`, `type`, `struct-lit`, `path`, `macro`,
 //!              `import`, `pat`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -51,22 +51,35 @@ struct Hit {
     name: String,
 }
 
-pub fn run(root: &Path, opts: &RefsOptions) -> String {
+pub fn run(roots: &[PathBuf], opts: &RefsOptions) -> String {
     let mut files: Vec<(PathBuf, String)> = Vec::new();
-    if root.is_file() {
-        if root.extension().and_then(|e| e.to_str()) == Some("rs") {
-            let abs = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-            let rel = display_rel(&abs);
-            files.push((abs, rel));
-        }
-    } else {
-        let filter = Filter {
-            exclude: Vec::new(),
-            ext: vec!["rs".to_string()],
-        };
-        match walk::enumerate(root, &filter) {
-            Ok(tree) => collect_rs_files(&tree, &mut files),
-            Err(e) => return format!("{e}\n"),
+    let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
+    for root in roots {
+        if root.is_file() {
+            if root.extension().and_then(|e| e.to_str()) == Some("rs") {
+                let abs = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+                if seen.insert(abs.clone()) {
+                    let rel = display_rel(&abs);
+                    files.push((abs, rel));
+                }
+            }
+        } else {
+            let filter = Filter {
+                exclude: Vec::new(),
+                ext: vec!["rs".to_string()],
+            };
+            match walk::enumerate(root, &filter) {
+                Ok(tree) => {
+                    let mut tmp = Vec::new();
+                    collect_rs_files(&tree, &mut tmp);
+                    for (abs, rel) in tmp {
+                        if seen.insert(abs.clone()) {
+                            files.push((abs, rel));
+                        }
+                    }
+                }
+                Err(e) => return format!("{e}\n"),
+            }
         }
     }
 
@@ -76,25 +89,61 @@ pub fn run(root: &Path, opts: &RefsOptions) -> String {
     }
 
     if hits.is_empty() {
-        let mut idents: BTreeSet<String> = BTreeSet::new();
+        // In-scope ident pool first.
+        let mut in_scope: BTreeSet<String> = BTreeSet::new();
         for (abs, _) in &files {
             if let Ok(src) = fs::read_to_string(abs) {
-                collect_idents(&src, &mut idents);
+                collect_idents(&src, &mut in_scope);
             }
         }
-        let sugg = suggest(&opts.name, &idents, 5);
+        // If the user scoped the search and we found nothing, widen the
+        // suggestion pool to the whole repo (CWD) so typos are caught
+        // even when the right file lives outside scope. Out-of-scope
+        // hits are tagged so the user knows to broaden `--in`.
+        let scope_is_default = roots.len() == 1 && roots[0] == Path::new(".");
+        let mut all_idents = in_scope.clone();
+        if !scope_is_default {
+            let filter = Filter {
+                exclude: Vec::new(),
+                ext: vec!["rs".to_string()],
+            };
+            if let Ok(tree) = walk::enumerate(Path::new("."), &filter) {
+                let mut wider = Vec::new();
+                collect_rs_files(&tree, &mut wider);
+                for (abs, _) in wider {
+                    if seen.contains(&abs) {
+                        continue;
+                    }
+                    if let Ok(src) = fs::read_to_string(&abs) {
+                        collect_idents(&src, &mut all_idents);
+                    }
+                }
+            }
+        }
+        let sugg = suggest(&opts.name, &all_idents, 5);
         if sugg.is_empty() {
             return format!("no hits for `{}`\n", opts.name);
         }
+        let formatted: Vec<String> = sugg
+            .iter()
+            .map(|s| {
+                if scope_is_default || in_scope.contains(s) {
+                    s.clone()
+                } else {
+                    format!("{s} (outside scope)")
+                }
+            })
+            .collect();
         return format!(
             "no hits for `{}`\ndid you mean: {}?\n",
             opts.name,
-            sugg.join(", ")
+            formatted.join(", ")
         );
     }
     let mut out = String::new();
-    let mut src_cache: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
+    let mut src_cache: HashMap<String, Vec<String>> = HashMap::new();
+    let abs_by_rel: HashMap<&str, &PathBuf> =
+        files.iter().map(|(abs, rel)| (rel.as_str(), abs)).collect();
     for h in &hits {
         out.push_str(&format!(
             "{}:{}:{} {} {} {}\n",
@@ -102,11 +151,9 @@ pub fn run(root: &Path, opts: &RefsOptions) -> String {
         ));
         if let Some(ctx) = opts.excerpt {
             let lines = src_cache.entry(h.file.clone()).or_insert_with(|| {
-                let abs = files
-                    .iter()
-                    .find(|(_, rel)| rel == &h.file)
-                    .map(|(abs, _)| abs.clone());
-                abs.and_then(|p| fs::read_to_string(p).ok())
+                abs_by_rel
+                    .get(h.file.as_str())
+                    .and_then(|p| fs::read_to_string(p).ok())
                     .map(|s| s.lines().map(str::to_string).collect())
                     .unwrap_or_default()
             });
@@ -525,9 +572,38 @@ impl<'ast, 'a> Visit<'ast> for UseCollector<'a> {
 /// Pull every `Ident` from a Rust source file via a `proc_macro2`
 /// token-tree walk. Keywords (e.g. `fn`, `let`) leak in too, but they're
 /// filtered later by the similarity threshold against the user's query.
+///
+/// Falls back to a lexical scan when the file is not a syntactically
+/// valid token stream (e.g. contains lifetimes inside macro tokens that
+/// `proc_macro2` rejects). Without the fallback, suggestion completeness
+/// silently degrades on the very files the user most needs help with.
 fn collect_idents(src: &str, out: &mut BTreeSet<String>) {
     if let Ok(ts) = src.parse::<TokenStream>() {
         walk_tokens(ts, out);
+    } else {
+        scan_idents_lexical(src, out);
+    }
+}
+
+/// Lexical fallback: pull `[A-Za-z_][A-Za-z0-9_]*` runs out of `src`.
+/// No string/comment awareness — over-collects, but the suggestion
+/// scorer filters noise. Used only when the syntactic parse fails.
+fn scan_idents_lexical(src: &str, out: &mut BTreeSet<String>) {
+    let mut cur = String::new();
+    for c in src.chars() {
+        let alnum = c.is_ascii_alphanumeric() || c == '_';
+        if alnum {
+            if cur.is_empty() && c.is_ascii_digit() {
+                // Skip number literals.
+                continue;
+            }
+            cur.push(c);
+        } else if !cur.is_empty() {
+            out.insert(std::mem::take(&mut cur));
+        }
+    }
+    if !cur.is_empty() {
+        out.insert(cur);
     }
 }
 
@@ -869,6 +945,33 @@ mod tests {
         if let (Some(p), Some(m)) = (idx_prefix, idx_mid) {
             assert!(p < m, "prefix={p}, mid={m}, out={out:?}");
         }
+    }
+
+    #[test]
+    fn lexical_fallback_collects_idents() {
+        // Garbage that can't parse as a TokenStream — e.g. an unterminated
+        // raw string. Real syn parse will fail; lexical scan must still
+        // surface `MintShip` so suggestions work.
+        let src = "this is not rust at all `r#\"unterminated... MintShip ShipCommissioned end";
+        let mut out = BTreeSet::new();
+        collect_idents(src, &mut out);
+        assert!(
+            out.contains("MintShip"),
+            "lexical fallback should pick up `MintShip`, got {:?}",
+            out
+        );
+        assert!(out.contains("ShipCommissioned"));
+    }
+
+    #[test]
+    fn lexical_skips_number_literals() {
+        let src = "123 abc 4_56 def";
+        let mut out = BTreeSet::new();
+        scan_idents_lexical(src, &mut out);
+        assert!(out.contains("abc"));
+        assert!(out.contains("def"));
+        assert!(out.contains("_56")); // identifier-like, kept
+        assert!(!out.contains("123"));
     }
 
     #[test]

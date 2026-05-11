@@ -198,9 +198,18 @@ struct RefsArgs {
     #[arg(value_name = "NAME", num_args = 1.., required = true)]
     names: Vec<String>,
 
-    /// Root path to scan. Defaults to current directory.
-    #[arg(long = "in", default_value = ".", value_name = "PATH")]
-    path: PathBuf,
+    /// Root path(s) to scan. Repeatable, and comma-delimited values are
+    /// accepted (`--in a --in b` or `--in a,b`). Defaults to current
+    /// directory when omitted. Note: each `--in` consumes exactly one
+    /// path; bare positionals after the flag are treated as identifier
+    /// NAMEs, not additional scopes.
+    #[arg(
+        long = "in",
+        value_name = "PATH",
+        action = clap::ArgAction::Append,
+        value_delimiter = ',',
+    )]
+    paths: Vec<PathBuf>,
 
     /// Only emit definitions, skip uses.
     #[arg(long, conflicts_with = "uses_only")]
@@ -223,6 +232,8 @@ EXAMPLES:
   rmap refs render_file --uses-only       # who calls `render_file`?
   rmap refs Foo Bar Baz                   # multiple names (groups, blank line between)
   rmap refs Foo --in src/domain           # scope search to a subtree
+  rmap refs Foo --in src/a --in src/b     # multiple scopes (repeat --in)
+  rmap refs Foo --in src/a,src/b          # comma-delimited form
   rmap refs collect_idents --excerpt 2    # show ±2 lines of source around each hit
 
 OUTPUT:
@@ -479,10 +490,32 @@ fn run_module(args: ModuleArgs) -> ExitCode {
 }
 
 fn run_refs(args: RefsArgs) -> ExitCode {
+    // Guard: catch the most common mis-invocation —
+    //   `rmap refs Foo --in src/a src/b`
+    // clap consumes only `src/a` as `--in`; `src/b` lands in `names`.
+    // Reject path-shaped names with a hint instead of silently searching
+    // for a "src/b" identifier.
+    for n in &args.names {
+        if n.contains('/') || n.ends_with(".rs") {
+            eprintln!(
+                "error: `{n}` looks like a path, not an identifier. \
+                 Did you mean `--in {n}`? Each `--in` flag takes exactly \
+                 one path; repeat the flag (or use `--in a,b`) for \
+                 multiple roots."
+            );
+            return ExitCode::from(2);
+        }
+    }
+
     let mode = match (args.defs_only, args.uses_only) {
         (true, _) => refs::Mode::DefsOnly,
         (_, true) => refs::Mode::UsesOnly,
         _ => refs::Mode::Both,
+    };
+    let roots: Vec<PathBuf> = if args.paths.is_empty() {
+        vec![PathBuf::from(".")]
+    } else {
+        args.paths.clone()
     };
     for (i, name) in args.names.iter().enumerate() {
         if i > 0 {
@@ -493,7 +526,7 @@ fn run_refs(args: RefsArgs) -> ExitCode {
             mode,
             excerpt: args.excerpt,
         };
-        print!("{}", refs::run(&args.path, &opts));
+        print!("{}", refs::run(&roots, &opts));
     }
     ExitCode::SUCCESS
 }
