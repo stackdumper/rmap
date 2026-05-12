@@ -1,15 +1,14 @@
 //! Path enumeration: build an in-memory tree of files/dirs rooted at PATH.
 //!
-//! Strategy: use `git ls-files --cached --others --exclude-standard` for
-//! gitignore-aware listing when inside a git work tree. Outside git, fall
-//! back to a filesystem walk that skips common throwaway dirs.
+//! Strategy: use the `ignore` crate's parallel walker. It respects
+//! `.gitignore`, `.ignore`, global git excludes, and hidden-file rules
+//! whether or not the root is inside a git work tree. No external `git`
+//! process required.
 
+use ignore::WalkBuilder;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-
-const SKIP_DIRS: &[&str] = &[".git", "target", "node_modules", ".DS_Store", "tmp", "dist"];
 
 #[derive(Debug)]
 pub enum Node {
@@ -144,72 +143,40 @@ impl TreeBuild {
 }
 
 fn list_paths(root: &Path) -> Vec<String> {
-    if let Some(paths) = git_ls_files(root) {
-        return paths;
-    }
-    fs_walk(root)
-}
-
-fn git_ls_files(root: &Path) -> Option<Vec<String>> {
-    let inside = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .output()
-        .ok()?;
-    if !inside.status.success() {
-        return None;
-    }
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args([
-            "ls-files",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "-z",
-        ])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout);
-    Some(
-        s.split('\0')
-            .filter(|p| !p.is_empty())
-            .map(|p| p.to_string())
-            .collect(),
-    )
-}
-
-fn fs_walk(root: &Path) -> Vec<String> {
     let mut out = Vec::new();
-    fs_walk_inner(root, root, &mut out);
-    out
-}
-
-fn fs_walk_inner(root: &Path, current: &Path, out: &mut Vec<String>) {
-    let Ok(rd) = fs::read_dir(current) else {
-        return;
-    };
-    for entry in rd.filter_map(Result::ok) {
-        let fname = entry.file_name().to_string_lossy().into_owned();
-        if SKIP_DIRS.contains(&fname.as_str()) {
+    let walker = WalkBuilder::new(root)
+        .hidden(false) // include dotfiles unless explicitly ignored
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .ignore(true)
+        .parents(true)
+        .filter_entry(|e| {
+            // Skip VCS metadata dirs even when `hidden(false)`.
+            !matches!(e.file_name().to_str(), Some(".git" | ".hg" | ".svn"))
+        })
+        .build();
+    for entry in walker.flatten() {
+        let path = entry.path();
+        if path == root {
             continue;
         }
-        let path = entry.path();
+        let Ok(file_type) = entry.file_type().ok_or(()) else {
+            continue;
+        };
+        if !file_type.is_file() {
+            continue;
+        }
         let Ok(rel) = path.strip_prefix(root) else {
             continue;
         };
         let rel_str = rel.to_string_lossy().replace('\\', "/");
-        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            fs_walk_inner(root, &path, out);
-        } else {
-            out.push(rel_str);
+        if rel_str.is_empty() {
+            continue;
         }
+        out.push(rel_str);
     }
+    out
 }
 
 #[cfg(test)]

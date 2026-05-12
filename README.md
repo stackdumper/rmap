@@ -7,21 +7,12 @@ Codebase map CLI. Compact, parsed, friendly to humans and LLM tooling.
 
 ![rmap in Claude Code](docs/preview.webp)
 
-> **Rust-aware today.** `tree` (no `--detail`) works on any repo. Item parsing, `refs`, `deps`, and `graph` are Rust-only — they use `syn` to read `.rs` files. Other languages render as bare file names.
-
-Path enumeration is git-aware via `git ls-files` and respects `.gitignore`. Outside a git work tree, `rmap` falls back to a filesystem walk that skips `.git`, `target`, `node_modules`, `.DS_Store`, `tmp`, `dist`.
+> **Rust-aware today.** `tree` (no `--detail`) works on any repo. Item parsing, `refs`, `deps`, `graph` are Rust-only (parsed via `syn`). Other languages render as bare file names. Respects `.gitignore` in or out of a git work tree.
 
 ## Install
 
 ```sh
 cargo install rmap
-```
-
-From source:
-
-```sh
-cargo install --git https://github.com/stackdumper/rmap
-cargo install --path .                # local checkout
 ```
 
 ## Subcommands
@@ -78,20 +69,16 @@ rmap graph --mermaid               # mermaid `graph TD` block
 
 ```
 src {
-  main.rs { struct Cli, enum Cmd, fn main, fn run_tree, fn run_module }
   parse.rs { struct ParseOptions, fn render_file, fn render_str, fn render_items }
-  walk.rs {
-    const SKIP_DIRS, enum Node { fn name }, struct Filter,
-    fn enumerate, fn list_paths, fn git_ls_files
-  }
+  walk.rs { enum Node { fn name }, struct Filter, fn enumerate, fn list_paths }
 }
 ```
 
 `rmap tree --detail --lines`:
 
 ```
-walk.rs:249 { const SKIP_DIRS:12-19, enum Node:21-32 { fn name:35-39 },
-              struct Filter:42-50, fn enumerate:52-79, ... }
+walk.rs:200 { enum Node:13-24 { fn name:27-31 }, struct Filter:34-42,
+              fn enumerate:44-67, ... }
 ```
 
 `rmap refs Filter`:
@@ -135,14 +122,6 @@ src/main { deps, graph { deps* }, parse, refs { walk }, render { parse*, walk* }
 
 Markers: `*` revisit, `~` back-edge, `{…}` depth limit hit.
 
-## Non-Rust repos
-
-`rmap` still works — with reduced fidelity:
-
-- `tree` (no `--detail`) — full layout, language-agnostic.
-- `tree --detail`, `module` — non-`.rs` files render as bare names.
-- `refs`, `deps`, `graph` — Rust-only. Run on a Rust repo or scope with `--in`.
-
 ## Teach an AI agent
 
 ```sh
@@ -172,7 +151,7 @@ Run `rmap --help` for the full surface. Highlights:
 - `def` kinds: `fn, method, struct, enum, union, trait, const, static, type, macro`.
 - `use` kinds: `call, method, type, struct-lit, path, macro, import, pat`.
 - Matches by trailing path segment only — no name resolution. Scope with `--in PATH` to disambiguate.
-- On zero hits, suggests similar identifiers (`did you mean: ...`) ranked by substring, snake/camelCase token overlap, longest common prefix, character-bigram Jaccard similarity, and edit distance. A signal gate suppresses short-edit-distance noise (e.g. `Bar` won't be suggested for `baner`).
+- Zero hits → `did you mean: ...` suggestions ranked by token overlap, prefix, bigram similarity, edit distance.
 
 **`deps [PATH]`**
 - `--reverse`, `--ext`
@@ -185,12 +164,6 @@ Run `rmap --help` for the full surface. Highlights:
 - Zero or more entries (each renders its own subgraph; default = detected crate root).
 - Default output: single-line brace tree. Reuses the `deps` graph and follows `mod x;` edges too.
 
-## Conventions
-
-- Output is plain text on stdout; errors go to stderr with non-zero exit.
-- No colors, no panics on user input.
-- Item parsing is Rust-only (via `syn`).
-
 ## License
 
-MIT. See [LICENSE](LICENSE).
+[MIT](LICENSE).
