@@ -5,6 +5,8 @@
 
 Codebase map CLI. Compact, parsed, friendly to humans and LLM tooling.
 
+![rmap in Claude Code](docs/preview.webp)
+
 > **Rust-aware today.** `tree` (no `--detail`) works on any repo. Item parsing, `refs`, `deps`, and `graph` are Rust-only — they use `syn` to read `.rs` files. Other languages render as bare file names.
 
 Path enumeration is git-aware via `git ls-files` and respects `.gitignore`. Outside a git work tree, `rmap` falls back to a filesystem walk that skips `.git`, `target`, `node_modules`, `.DS_Store`, `tmp`, `dist`.
