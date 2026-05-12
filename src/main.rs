@@ -637,10 +637,12 @@ items via `syn`, brace output on stdout.
 - `rmap module <path-or-suffix>...` — focused index of one or more
   subtrees or files, items always inlined. Suffix resolves if exactly
   one dir matches. Multiple args render in order, blank line between.
+  Add `--lines` for per-symbol line ranges (replaces blind `sed -n A,Bp`).
 - `rmap refs <Name>...` — find defs + uses of one or more Rust
   identifiers. `--defs-only` / `--uses-only` to filter, `--in PATH`
   to scope, `--excerpt N` to inline ±N source lines per hit (hit line
-  marked `>`). Matches by trailing path segment.
+  marked `>`, replaces `sed -n` after `grep -n`). Matches by trailing
+  path segment. Parsed via `syn` — no false hits in comments/strings.
 - `rmap deps [PATH]` — file-level dep graph from `use` + `mod`. Default
   whole-repo forward (`file -> deps`). `--reverse` for callers,
   `--ext` for external crates. Pass a `.rs` file to focus on one file.
@@ -655,6 +657,17 @@ Sample (`rmap module src/walk.rs`):
 ```
 walk.rs { const SKIP_DIRS, enum Node { fn name }, struct Filter, fn enumerate, ... }
 ```
+
+Anti-patterns — replace these combos:
+
+- `grep -n Foo path/to/file.rs && sed -n 'A,Bp' path/to/file.rs`
+  → `rmap refs Foo --in path/to/file.rs --excerpt 3`
+- `grep -rn 'fn foo\\|pub fn foo' src/`
+  → `rmap refs foo --defs-only`
+- `head -40 file.rs` (to learn file shape)
+  → `rmap module file.rs --lines`
+- `find src -name '*.rs' | xargs grep -l Bar`
+  → `rmap refs Bar` (lists hits per file, parsed not regex)
 
 Run `rmap --help` for flags (`--depth`, `--lines`, `--ext`, ...).
 ";
