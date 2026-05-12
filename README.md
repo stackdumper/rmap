@@ -1,7 +1,7 @@
 # rmap
 
 [![crates.io](https://img.shields.io/crates/v/rmap.svg)](https://crates.io/crates/rmap)
-[![license](https://img.shields.io/crates/l/rmap.svg)](LICENSE)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Codebase map CLI. Compact, parsed, friendly to humans and LLM tooling.
 
