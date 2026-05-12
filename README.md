@@ -3,7 +3,7 @@
 [![crates.io](https://img.shields.io/crates/v/rmap.svg)](https://crates.io/crates/rmap)
 [![license](https://img.shields.io/crates/l/rmap.svg)](LICENSE)
 
-Codebase map CLI. The first command to run on an unfamiliar repo. Compact, parsed, friendly to humans and LLM tooling.
+Codebase map CLI. Compact, parsed, friendly to humans and LLM tooling.
 
 > **Rust-aware today.** `tree` (no `--detail`) works on any repo. Item parsing, `refs`, `deps`, and `graph` are Rust-only — they use `syn` to read `.rs` files. Other languages render as bare file names.
 
