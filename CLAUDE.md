@@ -1,6 +1,6 @@
 # rmap
 
-Codebase map CLI. Five lenses: `tree`, `module`, `refs`, `deps`, `graph`. Rust-aware (parses items via `syn`). Git-aware enumeration; falls back to fs walk outside repo.
+Codebase map CLI. Six lenses: `tree`, `module`, `refs`, `deps`, `graph`, `body`. Rust-aware (parses items via `syn`). Git-aware enumeration; falls back to fs walk outside repo.
 
 ## Use rmap to explore rmap
 
@@ -11,6 +11,7 @@ rmap tree --depth 2            # shape of repo
 rmap tree --detail --lines     # items + per-symbol line ranges
 rmap module src                # focused index
 rmap module src/parse.rs       # items in one file
+rmap body fn_name              # full source body of one symbol
 ```
 
 Don't `find`/`ls`/`tree` for layout — `rmap` is faster, parsed, and the thing under test.
@@ -30,6 +31,7 @@ Don't `find`/`ls`/`tree` for layout — `rmap` is faster, parsed, and the thing 
 - `src/deps.rs` — file-level dep graph (`use` + `mod` resolution).
 - `src/graph.rs` — reachability subgraph (brace + mermaid).
 - `src/refs.rs` — identifier search (defs + uses via syn visitor).
+- `src/body.rs` — print full source body of an item by name (span slice).
 
 ## Conventions
 

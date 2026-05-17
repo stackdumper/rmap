@@ -7,6 +7,7 @@
 //! `rmap --help` for top-level usage; `rmap <subcommand> --help` for
 //! per-subcommand flags.
 
+mod body;
 mod deps;
 mod graph;
 mod parse;
@@ -35,6 +36,7 @@ RECOMMENDED WORKFLOW (orient an unfamiliar repo):
   5. rmap refs <Name>                     # find defs + uses of a symbol
   6. rmap deps                            # file-level dep graph (architecture)
   7. rmap graph [ENTRY]                   # reachability subgraph from entry
+  8. rmap body <Name>                     # print full source body of a symbol
 
 EXAMPLES:
   rmap tree --depth 2
@@ -49,6 +51,8 @@ EXAMPLES:
   rmap deps src/walk.rs                   # focused: in/out/ext for one file
   rmap graph                              # forward tree from crate root
   rmap graph src/walk.rs --reverse        # who reaches walk.rs?
+  rmap body run_refs                      # print fn body verbatim
+  rmap body Foo::bar                      # impl method body
 
 NOTES FOR TOOLING / LLMS:
   - `module` accepts a unique path suffix; on ambiguity it lists candidates and exits non-zero.
@@ -68,7 +72,8 @@ NOTES FOR TOOLING / LLMS:
         module  Focused index of one subtree (Rust items always inlined).\n  \
         refs    Find references to a Rust identifier (defs + uses).\n  \
         deps    File-level dep graph from `use` and `mod` statements.\n  \
-        graph   Reachability subgraph from an entry file (forward / reverse).\n\n\
+        graph   Reachability subgraph from an entry file (forward / reverse).\n  \
+        body    Print the full source body of a Rust item.\n\n\
         Path enumeration is git-aware: respects .gitignore via `git ls-files`. \
         Outside a git repo, walks the fs and skips .git/target/node_modules/.DS_Store/tmp/dist.",
     arg_required_else_help = true,
@@ -91,6 +96,8 @@ enum Cmd {
     Deps(DepsArgs),
     /// Reachability subgraph from an entry file (forward or reverse).
     Graph(GraphArgs),
+    /// Print the full source body of a Rust item by name.
+    Body(BodyArgs),
     /// Print a markdown snippet teaching AI agents (Claude/Cursor/Codex/...) to
     /// reach for `rmap` instead of `find`/`ls`/`tree`. Paste into CLAUDE.md,
     /// AGENTS.md, .cursorrules, or any system-prompt file your agent reads.
@@ -380,6 +387,52 @@ NOTES:
     edges in this model).
 ";
 
+#[derive(Args)]
+#[command(after_long_help = BODY_AFTER_HELP)]
+struct BodyArgs {
+    /// Symbol(s) to print. Accepts plain `name` or `Type::method`.
+    /// Multiple names render in groups, blank line between.
+    #[arg(value_name = "NAME", num_args = 1.., required = true)]
+    names: Vec<String>,
+
+    /// Root path(s) to scan. Repeatable, comma-delimited values accepted
+    /// (`--in a --in b` or `--in a,b`). Defaults to current directory.
+    #[arg(
+        long = "in",
+        value_name = "PATH",
+        action = clap::ArgAction::Append,
+        value_delimiter = ',',
+    )]
+    paths: Vec<PathBuf>,
+
+    /// Filter by item kind. One of: fn, method, struct, enum, union,
+    /// trait, impl, const, static, type, macro.
+    #[arg(long, value_name = "KIND")]
+    kind: Option<String>,
+}
+
+const BODY_AFTER_HELP: &str = "\
+EXAMPLES:
+  rmap body run_refs                      # print fn body
+  rmap body Foo::bar                      # impl method on Foo
+  rmap body Filter                        # struct/enum/trait body
+  rmap body Foo --kind impl               # the `impl Foo { ... }` block
+  rmap body run_body --in src/main.rs     # scoped lookup
+
+OUTPUT:
+  Each match prefixed with a header:
+    // <file>:<start>-<end> <kind> <name>
+    <verbatim source lines>
+  Multiple matches separated by a blank line.
+
+LIMITATIONS:
+  - Matches by trailing identifier (no name resolution). Use `Type::name`
+    or `--in PATH` / `--kind` to disambiguate.
+  - Rust only. Non-`.rs` files ignored.
+  - Span is reported via `syn`; doc comments above an item are included
+    when they are attached as attributes (the usual case).
+";
+
 const MODULE_AFTER_HELP: &str = "\
 EXAMPLES:
   rmap module computer                    # fuzzy: resolves to unique src/.../computer
@@ -401,6 +454,7 @@ fn main() -> ExitCode {
         Cmd::Refs(args) => run_refs(args),
         Cmd::Deps(args) => run_deps(args),
         Cmd::Graph(args) => run_graph(args),
+        Cmd::Body(args) => run_body(args),
         Cmd::Agent => run_agent(),
         Cmd::Completions { shell } => run_completions(shell),
     }
@@ -621,6 +675,34 @@ fn run_graph(args: GraphArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn run_body(args: BodyArgs) -> ExitCode {
+    for n in &args.names {
+        if n.contains('/') || n.ends_with(".rs") {
+            eprintln!(
+                "error: `{n}` looks like a path, not a symbol. \
+                 Did you mean `--in {n}`?"
+            );
+            return ExitCode::from(2);
+        }
+    }
+    let roots: Vec<PathBuf> = if args.paths.is_empty() {
+        vec![PathBuf::from(".")]
+    } else {
+        args.paths.clone()
+    };
+    for (i, name) in args.names.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        let opts = body::BodyOptions {
+            name: name.clone(),
+            kind: args.kind.clone(),
+        };
+        print!("{}", body::run(&roots, &opts));
+    }
+    ExitCode::SUCCESS
+}
+
 fn run_agent() -> ExitCode {
     print!("{AGENT_SNIPPET}");
     ExitCode::SUCCESS
@@ -651,6 +733,10 @@ items via `syn`, brace output on stdout.
   (`main { deps, refs { walk }, ... }`). Markers: `*` revisit,
   `~` cycle, `{…}` depth limit. `--reverse`, `--depth N`, `--ext`,
   `--mermaid` for diagram output.
+- `rmap body <Name>...` — print the full source body of a Rust item by
+  name. Accepts `Type::method` for impl methods. `--in PATH` scopes,
+  `--kind KIND` filters (fn|method|struct|enum|trait|impl|const|...).
+  Replaces `rmap module --lines` + `sed -n A,Bp`.
 
 Sample (`rmap module src/walk.rs`):
 
@@ -666,6 +752,8 @@ Anti-patterns — replace these combos:
   → `rmap refs foo --defs-only`
 - `head -40 file.rs` (to learn file shape)
   → `rmap module file.rs --lines`
+- `rmap module file.rs --lines && sed -n 'A,Bp' file.rs` (to read one fn)
+  → `rmap body fn_name`  (or `rmap body Type::method`)
 - `find src -name '*.rs' | xargs grep -l Bar`
   → `rmap refs Bar` (lists hits per file, parsed not regex)
 

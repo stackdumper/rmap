@@ -188,7 +188,7 @@ fn render_excerpt(out: &mut String, lines: &[String], hit_line: usize, ctx: usiz
     }
 }
 
-fn collect_rs_files(node: &Node, out: &mut Vec<(PathBuf, String)>) {
+pub(crate) fn collect_rs_files(node: &Node, out: &mut Vec<(PathBuf, String)>) {
     match node {
         Node::Dir { children, .. } => {
             for c in children {
@@ -208,7 +208,7 @@ fn collect_rs_files(node: &Node, out: &mut Vec<(PathBuf, String)>) {
 /// possible (so `rmap refs Foo --in src/sub` from the repo root prints
 /// `src/sub/file.rs:...`). Falls back to the absolute path if `abs` is
 /// outside CWD or CWD is unavailable.
-fn display_rel(abs: &Path) -> String {
+pub(crate) fn display_rel(abs: &Path) -> String {
     let cwd = std::env::current_dir().ok();
     if let Some(cwd) = cwd {
         if let Ok(rel) = abs.strip_prefix(&cwd) {
@@ -577,7 +577,7 @@ impl<'ast, 'a> Visit<'ast> for UseCollector<'a> {
 /// valid token stream (e.g. contains lifetimes inside macro tokens that
 /// `proc_macro2` rejects). Without the fallback, suggestion completeness
 /// silently degrades on the very files the user most needs help with.
-fn collect_idents(src: &str, out: &mut BTreeSet<String>) {
+pub(crate) fn collect_idents(src: &str, out: &mut BTreeSet<String>) {
     if let Ok(ts) = src.parse::<TokenStream>() {
         walk_tokens(ts, out);
     } else {
@@ -765,7 +765,7 @@ fn score(query: &str, cand: &str) -> i32 {
 
 /// Rank `idents` by similarity to `query`. Returns up to `n` candidates
 /// above an empirical floor; empty if nothing crosses the bar.
-fn suggest(query: &str, idents: &BTreeSet<String>, n: usize) -> Vec<String> {
+pub(crate) fn suggest(query: &str, idents: &BTreeSet<String>, n: usize) -> Vec<String> {
     const FLOOR: i32 = 60;
     let mut scored: Vec<(i32, &String)> = idents
         .iter()

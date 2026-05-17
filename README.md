@@ -24,6 +24,7 @@ cargo install rmap
 | `refs`   | Find defs + uses of one or more identifiers.                     | Yes        |
 | `deps`   | File-level dep graph from `use` and `mod` statements.            | Yes        |
 | `graph`  | Reachability subgraph from an entry file (forward or reverse).   | Yes        |
+| `body`   | Print the full source body of a Rust item by name.               | Yes        |
 
 ## Quick start
 
@@ -49,6 +50,15 @@ Find an identifier:
 rmap refs enumerate                # all defs + uses
 rmap refs Filter --defs-only       # where defined?
 rmap refs render_file --uses-only  # who calls?
+```
+
+Print a symbol's source body:
+
+```sh
+rmap body run_refs                 # whole fn body, verbatim
+rmap body Foo::bar                 # impl method
+rmap body Filter                   # struct / enum / trait body
+rmap body Foo --kind impl          # the `impl Foo { ... }` block
 ```
 
 Trace dependencies:
@@ -122,6 +132,15 @@ src/main { deps, graph { deps* }, parse, refs { walk }, render { parse*, walk* }
 
 Markers: `*` revisit, `~` back-edge, `{…}` depth limit hit.
 
+`rmap body run_refs --in src/main.rs`:
+
+```
+// src/main.rs:566-597 fn run_refs
+fn run_refs(args: RefsArgs) -> ExitCode {
+    ...
+}
+```
+
 ## Teach an AI agent
 
 ```sh
@@ -163,6 +182,13 @@ Run `rmap --help` for the full surface. Highlights:
 - `--reverse`, `--mermaid`, `--depth N`, `--ext`
 - Zero or more entries (each renders its own subgraph; default = detected crate root).
 - Default output: single-line brace tree. Reuses the `deps` graph and follows `mod x;` edges too.
+
+**`body <NAME>...`**
+- `--in PATH` (repeatable), `--kind KIND`
+- Prints the full source body of one or more items, prefixed by a `// file:start-end kind name` header. Multiple matches separated by a blank line.
+- Name forms: `name` (any kind) or `Type::method` (impl method scoped to `Type`).
+- `--kind` filters: `fn, method, struct, enum, union, trait, impl, const, static, type, macro`. Use `--kind impl` to grab a whole `impl Foo { ... }` block.
+- Matches by trailing identifier; uses the same `did you mean` suggestions as `refs` on miss.
 
 ## License
 
