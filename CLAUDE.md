@@ -1,6 +1,6 @@
 # rmap
 
-Codebase map CLI. Six lenses: `tree`, `module`, `refs`, `deps`, `graph`, `body`. Rust-aware (parses items via `syn`). Git-aware enumeration; falls back to fs walk outside repo.
+Codebase map CLI. Six lenses: `tree`, `module`, `refs`, `deps`, `graph`, `body`. Rust-aware (parses items via `syn`). Git-aware enumeration; falls back to fs walk outside repo. Global `--crate <name|name@version>` rebases any lens onto a vendored crate's source in the local cargo registry (offline).
 
 ## Use rmap to explore rmap
 
@@ -32,6 +32,7 @@ Don't `find`/`ls`/`tree` for layout — `rmap` is faster, parsed, and the thing 
 - `src/graph.rs` — reachability subgraph (brace + mermaid).
 - `src/refs.rs` — identifier search (defs + uses via syn visitor).
 - `src/body.rs` — print full source body of an item by name (span slice).
+- `src/krate.rs` — resolve `--crate` spec to registry source dir (Cargo.lock pin / highest semver; hand-parsed lock, no toml dep).
 
 ## Conventions
 

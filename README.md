@@ -73,6 +73,22 @@ rmap graph src/walk.rs --reverse   # who reaches walk.rs?
 rmap graph --mermaid               # mermaid `graph TD` block
 ```
 
+Explore a dependency's source (`--crate`, global flag on every lens):
+
+```sh
+rmap tree --crate serde --depth 2  # shape of a vendored crate
+rmap module --crate tokio runtime  # focused index inside a crate
+rmap body Deserialize --crate serde     # read a symbol's source
+rmap refs spawn --crate tokio      # defs + uses inside the crate
+rmap body Foo --crate serde@1.0.210     # pin an exact version
+```
+
+`--crate SPEC` rebases every path onto a crate's unpacked source in the local
+cargo registry (`$CARGO_HOME/registry/src/...`). Offline only — the crate must
+already be fetched (`cargo fetch` / any build). `SPEC` is `name` or
+`name@version`; a bare name uses the version pinned by the nearest `Cargo.lock`,
+falling back to the highest vendored version (with a warning).
+
 ## Output samples
 
 `rmap tree --detail`:
@@ -152,6 +168,9 @@ Prints a short markdown snippet telling Claude/Cursor/Codex/... to reach for `rm
 ## Flags reference
 
 Run `rmap --help` for the full surface. Highlights:
+
+**Global**
+- `--crate SPEC` — rebase all paths onto a vendored crate's source (`name` or `name@version`). Works with every lens. Offline; uses the `Cargo.lock` pin for a bare name.
 
 **`tree`**
 - `--depth N`, `--detail`, `--lines`

@@ -1,8 +1,15 @@
 //! `rmap` — codebase map CLI.
 //!
-//! Two lenses on the repo, each with progressive disclosure:
+//! Six lenses on the repo, each with progressive disclosure:
 //!   - `tree`    Brace map of files and directories.
 //!   - `module`  Focused index of one subtree, with parsed Rust items.
+//!   - `refs`    Definitions + uses of a Rust identifier.
+//!   - `deps`    File-level dependency graph.
+//!   - `graph`   Reachability subgraph from an entry file.
+//!   - `body`    Full source body of a Rust item by name.
+//!
+//! The global `--crate <name|name@version>` flag rebases any lens onto a
+//! vendored crate's source in the local cargo registry (see `krate`).
 //!
 //! `rmap --help` for top-level usage; `rmap <subcommand> --help` for
 //! per-subcommand flags.
@@ -10,6 +17,7 @@
 mod body;
 mod deps;
 mod graph;
+mod krate;
 mod parse;
 mod refs;
 mod render;
@@ -54,10 +62,20 @@ EXAMPLES:
   rmap body run_refs                      # print fn body verbatim
   rmap body Foo::bar                      # impl method body
 
+EXPLORE A DEPENDENCY (--crate, global flag on every lens):
+  rmap tree --crate serde --depth 2       # shape of a vendored crate
+  rmap module --crate tokio runtime       # focused index inside a crate
+  rmap body Deserialize --crate serde     # read a symbol's source
+  rmap refs spawn --crate tokio           # find defs/uses in a crate
+  rmap body Foo --crate serde@1.0.210     # pin an exact version
+
 NOTES FOR TOOLING / LLMS:
   - `module` accepts a unique path suffix; on ambiguity it lists candidates and exits non-zero.
   - `--detail` implies `--depth 4` if no `--depth` is given (prevents wall-of-text).
   - `--lines` adds `:start-end` to every parsed symbol and `:LOC` to files.
+  - `--crate SPEC` rebases all paths onto a crate's source in the local cargo
+    registry (offline; must be `cargo fetch`ed). SPEC is `name` or `name@version`;
+    bare name uses the nearest Cargo.lock pin, else the highest vendored version.
   - Output is plain text on stdout; errors go to stderr with non-zero exit.
 ";
 
@@ -80,6 +98,15 @@ NOTES FOR TOOLING / LLMS:
     after_long_help = ROOT_AFTER_HELP,
 )]
 struct Cli {
+    /// Resolve all paths against an external crate's source in the local cargo
+    /// registry instead of the current directory. SPEC is `name` or
+    /// `name@version` (e.g. `serde`, `serde@1.0.210`). Bare name uses the
+    /// version pinned by the nearest Cargo.lock, else the highest vendored.
+    /// OFFLINE: the crate must already be fetched (`cargo fetch`/`build`).
+    /// Positional paths and `--in` become relative to the crate root.
+    #[arg(long = "crate", value_name = "SPEC", global = true)]
+    krate: Option<String>,
+
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -448,19 +475,55 @@ NOTES:
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+
+    // `agent` / `completions` take no paths, so `--crate` is irrelevant to them
+    // — handle them before resolving (a bad SPEC must not block `rmap agent`).
     match cli.cmd {
-        Cmd::Tree(args) => run_tree(args),
-        Cmd::Module(args) => run_module(args),
-        Cmd::Refs(args) => run_refs(args),
-        Cmd::Deps(args) => run_deps(args),
-        Cmd::Graph(args) => run_graph(args),
-        Cmd::Body(args) => run_body(args),
-        Cmd::Agent => run_agent(),
-        Cmd::Completions { shell } => run_completions(shell),
+        Cmd::Agent => return run_agent(),
+        Cmd::Completions { shell } => return run_completions(shell),
+        _ => {}
+    }
+
+    // Resolve `--crate SPEC` once to a source root used as the base for all
+    // relative paths. `None` means "current directory" (the default behavior).
+    let base: Option<PathBuf> = match cli.krate.as_deref() {
+        Some(spec) => match krate::resolve(spec) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::from(1);
+            }
+        },
+        None => None,
+    };
+    let base = base.as_deref();
+    match cli.cmd {
+        Cmd::Tree(args) => run_tree(args, base),
+        Cmd::Module(args) => run_module(args, base),
+        Cmd::Refs(args) => run_refs(args, base),
+        Cmd::Deps(args) => run_deps(args, base),
+        Cmd::Graph(args) => run_graph(args, base),
+        Cmd::Body(args) => run_body(args, base),
+        Cmd::Agent | Cmd::Completions { .. } => unreachable!("handled above"),
     }
 }
 
-fn run_tree(args: TreeArgs) -> ExitCode {
+/// Resolve a user-supplied path against an optional crate base. With a base,
+/// relative paths join onto it; without, they pass through unchanged.
+fn rebase(base: Option<&Path>, p: &Path) -> PathBuf {
+    match base {
+        Some(b) => b.join(p),
+        None => p.to_path_buf(),
+    }
+}
+
+/// The default root to scan when no positional path is given: the crate root
+/// under `--crate`, else the current directory.
+fn default_root(base: Option<&Path>) -> PathBuf {
+    base.map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn run_tree(args: TreeArgs, base: Option<&Path>) -> ExitCode {
     let mut caps = args.cap;
     if !args.no_default_caps && caps.is_empty() {
         caps.push((DEFAULT_SESSIONS_CAP.0.to_string(), DEFAULT_SESSIONS_CAP.1));
@@ -480,9 +543,9 @@ fn run_tree(args: TreeArgs) -> ExitCode {
         caps,
     };
     let paths = if args.paths.is_empty() {
-        vec![PathBuf::from(".")]
+        vec![default_root(base)]
     } else {
-        args.paths
+        args.paths.iter().map(|p| rebase(base, p)).collect()
     };
     let mut exit = ExitCode::SUCCESS;
     for (i, path) in paths.iter().enumerate() {
@@ -502,13 +565,13 @@ fn run_tree(args: TreeArgs) -> ExitCode {
     exit
 }
 
-fn run_module(args: ModuleArgs) -> ExitCode {
+fn run_module(args: ModuleArgs, base: Option<&Path>) -> ExitCode {
     let mut exit = ExitCode::SUCCESS;
     for (i, path) in args.paths.iter().enumerate() {
         if i > 0 {
             println!();
         }
-        let resolved = match resolve_module_path(path) {
+        let resolved = match resolve_module_path(path, base) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("{e}");
@@ -543,7 +606,7 @@ fn run_module(args: ModuleArgs) -> ExitCode {
     exit
 }
 
-fn run_refs(args: RefsArgs) -> ExitCode {
+fn run_refs(args: RefsArgs, base: Option<&Path>) -> ExitCode {
     // Guard: catch the most common mis-invocation —
     //   `rmap refs Foo --in src/a src/b`
     // clap consumes only `src/a` as `--in`; `src/b` lands in `names`.
@@ -567,9 +630,9 @@ fn run_refs(args: RefsArgs) -> ExitCode {
         _ => refs::Mode::Both,
     };
     let roots: Vec<PathBuf> = if args.paths.is_empty() {
-        vec![PathBuf::from(".")]
+        vec![default_root(base)]
     } else {
-        args.paths.clone()
+        args.paths.iter().map(|p| rebase(base, p)).collect()
     };
     for (i, name) in args.names.iter().enumerate() {
         if i > 0 {
@@ -585,8 +648,9 @@ fn run_refs(args: RefsArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run_deps(args: DepsArgs) -> ExitCode {
-    let (repo, focus, scope) = resolve_deps_target(&args.path);
+fn run_deps(args: DepsArgs, base: Option<&Path>) -> ExitCode {
+    let target = rebase(base, &args.path);
+    let (repo, focus, scope) = resolve_deps_target(&target);
     let mode = if args.reverse {
         deps::Mode::Reverse
     } else {
@@ -646,16 +710,17 @@ fn walk_up_for_cargo(start: &Path) -> PathBuf {
     }
 }
 
-fn run_graph(args: GraphArgs) -> ExitCode {
+fn run_graph(args: GraphArgs, base: Option<&Path>) -> ExitCode {
     let direction = if args.reverse {
         graph::Direction::Reverse
     } else {
         graph::Direction::Forward
     };
+    let repo = rebase(base, &args.repo);
     let entries: Vec<Option<PathBuf>> = if args.entries.is_empty() {
         vec![None]
     } else {
-        args.entries.into_iter().map(Some).collect()
+        args.entries.iter().map(|e| Some(rebase(base, e))).collect()
     };
     for (i, entry) in entries.into_iter().enumerate() {
         if i > 0 {
@@ -670,12 +735,12 @@ fn run_graph(args: GraphArgs) -> ExitCode {
             depth: args.depth,
             include_external: args.ext,
         };
-        print!("{}", graph::run(&args.repo, &opts));
+        print!("{}", graph::run(&repo, &opts));
     }
     ExitCode::SUCCESS
 }
 
-fn run_body(args: BodyArgs) -> ExitCode {
+fn run_body(args: BodyArgs, base: Option<&Path>) -> ExitCode {
     for n in &args.names {
         if n.contains('/') || n.ends_with(".rs") {
             eprintln!(
@@ -686,9 +751,9 @@ fn run_body(args: BodyArgs) -> ExitCode {
         }
     }
     let roots: Vec<PathBuf> = if args.paths.is_empty() {
-        vec![PathBuf::from(".")]
+        vec![default_root(base)]
     } else {
-        args.paths.clone()
+        args.paths.iter().map(|p| rebase(base, p)).collect()
     };
     for (i, name) in args.names.iter().enumerate() {
         if i > 0 {
@@ -737,6 +802,11 @@ items via `syn`, brace output on stdout.
   name. Accepts `Type::method` for impl methods. `--in PATH` scopes,
   `--kind KIND` filters (fn|method|struct|enum|trait|impl|const|...).
   Replaces `rmap module --lines` + `sed -n A,Bp`.
+- `--crate <name|name@version>` — global flag on every lens. Rebases all
+  paths onto a dependency's source in the local cargo registry, so you can
+  read a crate you depend on instead of guessing its API. Offline (must be
+  `cargo fetch`ed); bare name uses the Cargo.lock pin. E.g.
+  `rmap body Deserialize --crate serde`, `rmap tree --crate tokio --depth 2`.
 
 Sample (`rmap module src/walk.rs`):
 
@@ -780,16 +850,18 @@ fn parse_cap(s: &str) -> Result<(String, usize), String> {
 /// Resolve a module path. If the input exists, return it. Otherwise search
 /// the repo for directories whose path ends in the input as a path-aligned
 /// suffix; succeed iff exactly one candidate matches.
-fn resolve_module_path(input: &Path) -> Result<PathBuf, String> {
-    if input.exists() {
-        return Ok(input.to_path_buf());
+fn resolve_module_path(input: &Path, base: Option<&Path>) -> Result<PathBuf, String> {
+    let candidate = rebase(base, input);
+    if candidate.exists() {
+        return Ok(candidate);
     }
     let needle = input.to_string_lossy().replace('\\', "/");
     let needle = needle.trim_matches('/');
     if needle.is_empty() {
         return Err(format!("error: `{}` does not exist", input.display()));
     }
-    let candidates = walk::find_dirs_matching_suffix(Path::new("."), needle);
+    let search_root = default_root(base);
+    let candidates = walk::find_dirs_matching_suffix(&search_root, needle);
     match candidates.len() {
         0 => Err(format!(
             "error: `{}` does not exist and no directory ending in `{}` was found",
